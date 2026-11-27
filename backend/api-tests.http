@@ -1,0 +1,189 @@
+# FoodRescue API: ready-made test requests
+#
+# How to use (VS Code):
+#   1. Install the "REST Client" extension (by Huachao Mao).
+#   2. Start the backend:  cd backend  ->  npm run dev
+#   3. Click "Send Request" above any request below.
+#   4. Run the LOGIN requests first: the other requests reuse their tokens automatically.
+#
+# Every demo account uses the password Password123.
+
+@base = http://localhost:5000/api
+
+### 0. Health check (no login needed)
+GET {{base}}/health
+
+### ---------------------------------------------------------------- LOGINS (run these first)
+
+# @name admin
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "admin@foodrescue.test", "password": "Password123" }
+
+###
+# @name restaurant
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "restaurant@foodrescue.test", "password": "Password123" }
+
+###
+# @name ngo
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "ngo@foodrescue.test", "password": "Password123" }
+
+###
+# @name volunteer
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "volunteer@foodrescue.test", "password": "Password123" }
+
+### Wrong password (expect 401)
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{ "email": "ngo@foodrescue.test", "password": "wrong-password1" }
+
+### ---------------------------------------------------------------- PUBLIC
+
+### Food categories (14)
+GET {{base}}/categories
+
+### Areas (manual location fallback)
+GET {{base}}/areas
+
+### Public NGO directory for households, nearest first
+GET {{base}}/ngos?area=DHA Phase 2
+
+### Directory filtered by type
+GET {{base}}/ngos?ngoType=ORPHANAGE
+
+### ---------------------------------------------------------------- RESTAURANT (Savour Foods)
+
+### My profile
+GET {{base}}/auth/me
+Authorization: Bearer {{restaurant.response.body.token}}
+
+### My listings
+GET {{base}}/listings
+Authorization: Bearer {{restaurant.response.body.token}}
+
+### Post surplus food (change the times to later today if you like)
+POST {{base}}/listings
+Authorization: Bearer {{restaurant.response.body.token}}
+Content-Type: application/json
+
+{
+  "categoryId": 2,
+  "description": "Chicken biryani, end-of-day surplus",
+  "confirmedQuantity": 40,
+  "preparedAt": "{{$datetime iso8601 -1 h}}",
+  "safeUntil": "{{$datetime iso8601 4 h}}",
+  "collectionDeadline": "{{$datetime iso8601 3 h}}",
+  "dietaryInfo": "Halal",
+  "handlingNotes": "Packed in foil trays",
+  "safetyConfirmed": true
+}
+
+### ---------------------------------------------------------------- NGO (Rizq)
+
+### Open listings the NGO can see (exact address hidden until an offer is accepted)
+GET {{base}}/listings
+Authorization: Bearer {{ngo.response.body.token}}
+
+### My requests
+GET {{base}}/requests
+Authorization: Bearer {{ngo.response.body.token}}
+
+### Create a request (limited by the NGO's daily capacity)
+POST {{base}}/requests
+Authorization: Bearer {{ngo.response.body.token}}
+Content-Type: application/json
+
+{ "categoryId": 1, "requestedQuantity": 50, "requiredBy": "{{$datetime iso8601 6 h}}", "notes": "Evening meal" }
+
+### My offers (allocations): accept or reject the PROPOSED ones below
+GET {{base}}/allocations
+Authorization: Bearer {{ngo.response.body.token}}
+
+### Accept an offer (put a real allocation id from the list above)
+POST {{base}}/allocations/1/accept
+Authorization: Bearer {{ngo.response.body.token}}
+Content-Type: application/json
+
+{}
+
+### My reliability score
+GET {{base}}/reliability/me
+Authorization: Bearer {{ngo.response.body.token}}
+
+### My notifications
+GET {{base}}/notifications
+Authorization: Bearer {{ngo.response.body.token}}
+
+### ---------------------------------------------------------------- VOLUNTEER (Hassan Raza)
+
+### Tasks I can claim (most urgent first)
+GET {{base}}/tasks/available
+Authorization: Bearer {{volunteer.response.body.token}}
+
+### Combined pickup trips (the seeded Rizq trip: Savour Foods + Kabul Restaurant)
+# @name trips
+GET {{base}}/tasks/trips
+Authorization: Bearer {{volunteer.response.body.token}}
+
+### Claim the first trip (all stops at once)
+POST {{base}}/tasks/trips/{{trips.response.body.trips[0].requestId}}/claim
+Authorization: Bearer {{volunteer.response.body.token}}
+Content-Type: application/json
+
+{ "taskIds": {{trips.response.body.trips[0].taskIds}} }
+
+### My tasks
+GET {{base}}/tasks/mine
+Authorization: Bearer {{volunteer.response.body.token}}
+
+### ---------------------------------------------------------------- ADMIN
+
+### Accounts waiting for approval
+GET {{base}}/admin/verifications
+Authorization: Bearer {{admin.response.body.token}}
+
+### All users
+GET {{base}}/admin/users
+Authorization: Bearer {{admin.response.body.token}}
+
+### Reliability scores of all NGOs (weakest first)
+GET {{base}}/admin/reliability?role=NGO
+Authorization: Bearer {{admin.response.body.token}}
+
+### System settings
+GET {{base}}/admin/config
+Authorization: Bearer {{admin.response.body.token}}
+
+### Live concurrency demo: 10 simultaneous allocations with and without the lock (takes a while over Neon)
+POST {{base}}/admin/demo/concurrency
+Authorization: Bearer {{admin.response.body.token}}
+Content-Type: application/json
+
+{ "attempts": 6, "compare": true }
+
+### ---------------------------------------------------------------- SECURITY CHECKS
+
+### No token (expect 401)
+GET {{base}}/auth/me
+
+### Wrong role: a volunteer calling an admin route (expect 403)
+GET {{base}}/admin/users
+Authorization: Bearer {{volunteer.response.body.token}}
+
+### Invalid input (expect 400 with field errors)
+POST {{base}}/requests
+Authorization: Bearer {{ngo.response.body.token}}
+Content-Type: application/json
+
+{ "categoryId": "abc", "requestedQuantity": -5 }

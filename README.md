@@ -2,7 +2,7 @@
 
 A Surplus Food Prevention and Redistribution Platform — CSC336 Web Technologies Lab Semester Project, Team 5 (COMSATS University Islamabad).
 
-FoodRescue connects food donors (restaurants, event organisers, households) with NGOs and volunteers. It works in two tracks:
+FoodRescue connects licensed food businesses (restaurants, and marquees / caterers / event venues) with NGOs and volunteers.It works in two tracks:
 
 - **Track A – Prevention:** weekday demand forecast, potential-surplus warning, prevented-food counter.
 - **Track B – Rescue:** surplus listings, the Perishability-Aware Allocation Engine (filter, score, pool, lock), OTP-verified pickup and delivery, impact reporting.
@@ -60,6 +60,3 @@ food-rescue/
     └── postman/    # Postman collection
 ```
 
-## Getting started
-
-_Setup and run instructions will be added as the project is built._

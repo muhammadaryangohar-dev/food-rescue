@@ -1,0 +1,510 @@
+// FoodRescue database schema (PostgreSQL + Prisma)
+// Owner: Member 1 (schema). See docs/diagrams/er-diagram.md for the ER diagram.
+//
+// Who can donate: only LICENSED food businesses (restaurants, and marquees /
+// caterers / event venues). Households do not donate; they see the public NGO
+// directory (GET /api/ngos) and contact an NGO directly.
+//
+// Design rules (proposal section 14):
+// - Only a listing's CONFIRMED quantity is stored. Remaining / committed / delivered
+//   quantities are always calculated from Allocation rows, so they can never drift.
+// - Extra CHECK constraints (non-negative quantities, exactly-one donor source,
+//   collection deadline <= safe-until, donor businesses must hold a food licence)
+//   are added by hand at the end of the migration SQL files.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["relationJoins"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------- enums
+
+enum Role {
+  DONOR
+  NGO
+  VOLUNTEER
+  ADMIN
+}
+
+// Both are licensed businesses. MARQUEE_CATERER = marquee, caterer, banquet hall or
+// hotel that cooks for events (the business that cooks and can be held accountable).
+enum DonorType {
+  RESTAURANT
+  MARQUEE_CATERER
+}
+
+enum OrgType {
+  RESTAURANT
+  MARQUEE_CATERER
+  NGO
+}
+
+// What kind of NGO (NGOs only). Used by the fairness and impact pages and the directory.
+enum NgoType {
+  FOOD_KITCHEN
+  ORPHANAGE
+  OLD_AGE_HOME
+  SHELTER
+  OTHER
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum ListingSource {
+  RESTAURANT
+  EVENT
+}
+
+enum ListingStatus {
+  OPEN
+  CLOSED
+  EXPIRED
+}
+
+enum RequestStatus {
+  OPEN
+  FULFILLED
+  CANCELLED
+  EXPIRED
+}
+
+enum AllocationStatus {
+  PROPOSED
+  ACCEPTED
+  PICKED_UP
+  DELIVERED
+  REJECTED
+  EXPIRED
+  CANCELLED
+  FAILED
+}
+
+enum CollectorType {
+  VOLUNTEER
+  NGO
+}
+
+enum TaskStatus {
+  OPEN
+  CLAIMED
+  PICKED_UP
+  DELIVERED
+  LOCKED
+  CANCELLED
+}
+
+enum HandoverType {
+  PICKUP
+  DELIVERY
+}
+
+enum EventStatus {
+  PLANNED
+  COMPLETED
+  CONFIRMED
+}
+
+enum ReportType {
+  NO_SHOW
+  QUALITY
+  QUANTITY_MISMATCH
+  NOT_DELIVERED
+  SAFETY
+  OTHER
+}
+
+enum ReportStatus {
+  OPEN
+  UPHELD
+  DISMISSED
+}
+
+// ---------------------------------------------------------------- M1 access
+
+model User {
+  id             Int        @id @default(autoincrement())
+  name           String
+  email          String     @unique
+  passwordHash   String     @map("password_hash")
+  phone          String?
+  role           Role
+  donorType      DonorType? @map("donor_type")
+  organisationId Int?       @map("organisation_id")
+  active         Boolean    @default(true)
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  organisation     Organisation?     @relation(fields: [organisationId], references: [id])
+  volunteerProfile VolunteerProfile?
+  handovers        HandoverRecord[]
+  reportsFiled     Report[]          @relation("ReportReporter")
+  reportsResolved  Report[]          @relation("ReportResolver")
+  notifications    Notification[]
+  statusChanges    StatusHistory[]
+  configUpdates    SystemConfig[]
+
+  @@index([role])
+  @@map("users")
+}
+
+model Organisation {
+  id                 Int                @id @default(autoincrement())
+  name               String
+  type               OrgType
+  address            String
+  area               String
+  latitude           Float?
+  longitude          Float?
+  ngoType            NgoType?           @map("ngo_type") // NGO only (required for NGOs)
+  dailyCapacity      Int?               @map("daily_capacity") // NGO only, servings per day
+  beneficiaries      Int? // NGO only, people served per day (keeps daily capacity believable)
+  serviceRadiusKm    Float?             @map("service_radius_km") // NGO only
+  // Food licence: required for donor businesses (CHECK chk_donor_org_licence), null for NGOs.
+  // The admin checks it before verifying; an expired licence stops the business donating.
+  licenceNumber      String?            @map("licence_number")
+  licenceAuthority   String?            @map("licence_authority") // e.g. Islamabad Food Authority
+  licenceExpiresOn   DateTime?          @map("licence_expires_on") @db.Date
+  // Contact details. For an NGO they are shown in the public directory ONLY when the
+  // NGO opts in (showInDirectory), keeping NFR8's "hidden by default" promise.
+  contactPhone       String?            @map("contact_phone")
+  contactEmail       String?            @map("contact_email")
+  description        String? // NGO only: what they collect and who they serve
+  showInDirectory    Boolean            @default(false) @map("show_in_directory") // NGO only
+  verificationStatus VerificationStatus @default(PENDING) @map("verification_status")
+  createdAt          DateTime           @default(now()) @map("created_at")
+
+  users     User[]
+  foodItems FoodItem[]
+  events    Event[]
+  listings  SurplusListing[]
+  requests  NGORequest[]
+
+  @@unique([licenceAuthority, licenceNumber])
+  @@index([type, verificationStatus])
+  @@map("organisations")
+}
+
+model VolunteerProfile {
+  id             Int                @id @default(autoincrement())
+  userId         Int                @unique @map("user_id")
+  availability   String?
+  serviceArea    String?            @map("service_area")
+  approvalStatus VerificationStatus @default(PENDING) @map("approval_status")
+  noShowCount    Int                @default(0) @map("no_show_count")
+
+  user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks RescueTask[]
+
+  @@map("volunteer_profiles")
+}
+
+// ---------------------------------------------------------------- M2 / M3 food, prevention, events
+
+model FoodCategory {
+  id               Int    @id @default(autoincrement())
+  name             String @unique
+  defaultSafeHours Int    @map("default_safe_hours")
+
+  foodItems FoodItem[]
+  listings  SurplusListing[]
+  requests  NGORequest[]
+
+  @@map("food_categories")
+}
+
+model FoodItem {
+  id             Int    @id @default(autoincrement())
+  organisationId Int    @map("organisation_id")
+  categoryId     Int    @map("category_id")
+  name           String
+
+  organisation Organisation      @relation(fields: [organisationId], references: [id])
+  category     FoodCategory      @relation(fields: [categoryId], references: [id])
+  dailyRecords DailyFoodRecord[]
+  eventPlans   EventFoodPlan[]
+
+  @@unique([organisationId, name])
+  @@map("food_items")
+}
+
+model DailyFoodRecord {
+  id            Int      @id @default(autoincrement())
+  foodItemId    Int      @map("food_item_id")
+  date          DateTime @db.Date
+  planned       Int
+  forecastShown Int?     @map("forecast_shown")
+  prepared      Int?
+  sold          Int?
+  wasted        Int?
+  wasteReason   String?  @map("waste_reason")
+  soldOut       Boolean  @default(false) @map("sold_out")
+
+  foodItem FoodItem @relation(fields: [foodItemId], references: [id], onDelete: Cascade)
+
+  @@unique([foodItemId, date])
+  @@map("daily_food_records")
+}
+
+model Event {
+  id               Int         @id @default(autoincrement())
+  organisationId   Int         @map("organisation_id")
+  name             String
+  date             DateTime
+  venue            String
+  expectedGuests   Int         @map("expected_guests")
+  servingsPerGuest Float       @default(1) @map("servings_per_guest")
+  status           EventStatus @default(PLANNED)
+  createdAt        DateTime    @default(now()) @map("created_at")
+
+  organisation Organisation     @relation(fields: [organisationId], references: [id])
+  foodPlans    EventFoodPlan[]
+  listings     SurplusListing[]
+
+  @@index([status])
+  @@map("events")
+}
+
+model EventFoodPlan {
+  id              Int @id @default(autoincrement())
+  eventId         Int @map("event_id")
+  foodItemId      Int @map("food_item_id")
+  plannedServings Int @map("planned_servings")
+
+  event    Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  foodItem FoodItem @relation(fields: [foodItemId], references: [id])
+
+  @@map("event_food_plans")
+}
+
+// ---------------------------------------------------------------- M4 listings
+
+model SurplusListing {
+  id                  Int           @id @default(autoincrement())
+  sourceType          ListingSource @map("source_type")
+  // The donor business is ALWAYS set; eventId is set only for event leftovers
+  // (source_type = EVENT). CHECK constraint chk_listing_source in migration SQL.
+  organisationId      Int           @map("organisation_id")
+  eventId             Int?          @map("event_id")
+  createdById         Int           @map("created_by_id")
+  categoryId          Int           @map("category_id")
+  description         String
+  confirmedQuantity   Int           @map("confirmed_quantity") // servings; the ONLY stored quantity
+  preparedAt          DateTime      @map("prepared_at")
+  safeUntil           DateTime      @map("safe_until")
+  collectionDeadline  DateTime      @map("collection_deadline")
+  address             String
+  area                String
+  latitude            Float?
+  longitude           Float?
+  handlingNotes       String?       @map("handling_notes")
+  dietaryInfo         String?       @map("dietary_info")
+  safetyConfirmed     Boolean       @default(false) @map("safety_confirmed")
+  nearExpiryAlertedAt DateTime?     @map("near_expiry_alerted_at") // set when the one-time near-expiry alert went out
+  status              ListingStatus @default(OPEN)
+  createdAt           DateTime      @default(now()) @map("created_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
+
+  organisation Organisation    @relation(fields: [organisationId], references: [id])
+  event        Event?          @relation(fields: [eventId], references: [id])
+  category     FoodCategory    @relation(fields: [categoryId], references: [id])
+  allocations  Allocation[]
+  decisions    MatchDecision[]
+
+  @@index([status, collectionDeadline])
+  @@index([status, safeUntil])
+  @@index([organisationId])
+  @@map("surplus_listings")
+}
+
+// ---------------------------------------------------------------- M5 requests / matching
+
+model NGORequest {
+  id                  Int           @id @default(autoincrement())
+  ngoId               Int           @map("ngo_id") // Organisation of type NGO
+  createdById         Int           @map("created_by_id")
+  categoryId          Int           @map("category_id")
+  requestedQuantity   Int           @map("requested_quantity")
+  requiredBy          DateTime      @map("required_by")
+  notes               String?
+  status              RequestStatus @default(OPEN)
+  reallocationPending Boolean       @default(false) @map("reallocation_pending")
+  createdAt           DateTime      @default(now()) @map("created_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
+
+  ngo         Organisation    @relation(fields: [ngoId], references: [id])
+  category    FoodCategory    @relation(fields: [categoryId], references: [id])
+  allocations Allocation[]
+  decisions   MatchDecision[]
+
+  @@index([status, requiredBy])
+  @@map("ngo_requests")
+}
+
+// One row per (listing, request) pair considered by a matching run.
+// Written by the matching engine (Member 2); read by the Decision Log.
+model MatchDecision {
+  id              Int      @id @default(autoincrement())
+  runId           String   @map("run_id")
+  listingId       Int      @map("listing_id")
+  requestId       Int      @map("request_id")
+  eligible        Boolean
+  rejectionReason String?  @map("rejection_reason")
+  score           Float?
+  scoreBreakdown  Json?    @map("score_breakdown")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  listing SurplusListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  request NGORequest     @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([requestId])
+  @@map("match_decisions")
+}
+
+// ---------------------------------------------------------------- M6 allocations
+
+model Allocation {
+  id                Int              @id @default(autoincrement())
+  listingId         Int              @map("listing_id")
+  requestId         Int              @map("request_id")
+  quantity          Int
+  lostQuantity      Int              @default(0) @map("lost_quantity")
+  status            AllocationStatus @default(PROPOSED)
+  score             Float?
+  scoreBreakdown    Json?            @map("score_breakdown")
+  explanation       String?
+  proposedAt        DateTime         @default(now()) @map("proposed_at")
+  responseDeadline  DateTime         @map("response_deadline")
+  pickupDeadline    DateTime?        @map("pickup_deadline")
+  decisionReason    String?          @map("decision_reason")
+  reallocationCount Int              @default(0) @map("reallocation_count")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+
+  listing SurplusListing @relation(fields: [listingId], references: [id])
+  request NGORequest     @relation(fields: [requestId], references: [id])
+  task    RescueTask?
+  reports Report[]
+
+  @@index([status, responseDeadline])
+  @@index([status, pickupDeadline])
+  @@index([listingId, status])
+  @@index([requestId, status])
+  @@map("allocations")
+}
+
+// ---------------------------------------------------------------- M7 rescue
+
+model RescueTask {
+  id              Int           @id @default(autoincrement())
+  allocationId    Int           @unique @map("allocation_id")
+  collectorType   CollectorType @map("collector_type")
+  volunteerId     Int?          @map("volunteer_id") // VolunteerProfile id
+  pickupOtpHash   String        @map("pickup_otp_hash")
+  deliveryOtpHash String        @map("delivery_otp_hash")
+  otpNonce        String        @map("otp_nonce")
+  failedAttempts  Int           @default(0) @map("failed_attempts")
+  otpExpiresAt    DateTime      @map("otp_expires_at")
+  claimDeadline   DateTime?     @map("claim_deadline")
+  status          TaskStatus    @default(OPEN)
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  allocation Allocation        @relation(fields: [allocationId], references: [id])
+  volunteer  VolunteerProfile? @relation(fields: [volunteerId], references: [id])
+  handovers  HandoverRecord[]
+
+  @@index([status, claimDeadline])
+  @@map("rescue_tasks")
+}
+
+model HandoverRecord {
+  id           Int          @id @default(autoincrement())
+  taskId       Int          @map("task_id")
+  type         HandoverType
+  quantity     Int
+  recordedById Int          @map("recorded_by_id")
+  recordedAt   DateTime     @default(now()) @map("recorded_at")
+
+  task       RescueTask @relation(fields: [taskId], references: [id])
+  recordedBy User       @relation(fields: [recordedById], references: [id])
+
+  @@unique([taskId, type]) // one pickup and one delivery per task => idempotent
+  @@map("handover_records")
+}
+
+// ---------------------------------------------------------------- M11 tracking / reports
+
+model Report {
+  id             Int          @id @default(autoincrement())
+  reporterId     Int          @map("reporter_id")
+  allocationId   Int          @map("allocation_id")
+  type           ReportType
+  description    String
+  status         ReportStatus @default(OPEN)
+  resolutionNote String?      @map("resolution_note")
+  resolvedById   Int?         @map("resolved_by_id")
+  resolvedAt     DateTime?    @map("resolved_at")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  reporter   User       @relation("ReportReporter", fields: [reporterId], references: [id])
+  resolvedBy User?      @relation("ReportResolver", fields: [resolvedById], references: [id])
+  allocation Allocation @relation(fields: [allocationId], references: [id])
+
+  @@index([status])
+  @@map("reports")
+}
+
+model StatusHistory {
+  id          Int      @id @default(autoincrement())
+  entity      String // LISTING | REQUEST | ALLOCATION | TASK | EVENT | REPORT
+  entityId    Int      @map("entity_id")
+  fromStatus  String?  @map("from_status")
+  toStatus    String   @map("to_status")
+  reason      String?
+  actorUserId Int?     @map("actor_user_id") // null = system (sweep, matching)
+  time        DateTime @default(now())
+
+  actor User? @relation(fields: [actorUserId], references: [id])
+
+  @@index([entity, entityId])
+  @@map("status_history")
+}
+
+// ---------------------------------------------------------------- M12 notifications / admin
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  type      String
+  message   String
+  link      String?
+  isRead    Boolean  @default(false) @map("is_read")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+model SystemConfig {
+  key         String   @id
+  value       String
+  description String?
+  updatedById Int?     @map("updated_by_id")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  updatedBy User? @relation(fields: [updatedById], references: [id])
+
+  @@map("system_config")
+}
