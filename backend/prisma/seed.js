@@ -197,7 +197,26 @@ async function seedEvents(client, orgs) {
   const upcoming = await plan(orgs['marriott-islamabad'], { name: 'Tech Conference Lunch', date: new Date(now + 5 * 24 * HOUR), venue: 'Islamabad Marriott Hotel, Margalla Hall', expectedGuests: 300, servingsPerGuest: 1.0, status: 'PLANNED' }, [200, 150, 250]);
   const marquee = await plan(orgs['park-road-banquet'], { name: 'Wedding Baraat Dinner', date: new Date(now + 2 * 24 * HOUR), venue: 'Park Road Banquet Hall, Hall A', expectedGuests: 800, servingsPerGuest: 1.1, status: 'PLANNED' }, [500, 400, 600]);
   const e11 = await plan(orgs['monal-marquee'], { name: 'Mehndi Night', date: new Date(now + 3 * 24 * HOUR), venue: 'Monal Marquee, E-11', expectedGuests: 500, servingsPerGuest: 1.0, status: 'PLANNED' }, [350, 250, 400]);
-  return { past, today, upcoming, marquee, e11 };
+  // More events across E-11, the Expressway, Bahria Town, DHA and Shakarparian.
+  // [organisation slug, event name, offset from now, venue, guests, servings per guest, status]
+  const DAY = 24 * HOUR;
+  const more = [
+    ['zarrar-banquet', 'Wedding Walima', -6 * HOUR, 'Zarrar Banquet Hall, DHA Phase 2', 500, 1.1, 'COMPLETED'],
+    ['capital-banquet', 'Corporate Dinner', -4 * HOUR, 'Capital Banquet & Marquee, DHA Phase 2', 300, 1.0, 'COMPLETED'],
+    ['bahria-grand-hall', 'School Annual Dinner', -1 * DAY, 'Bahria Grand Hall, Bahria Town Phase 7', 350, 1.0, 'COMPLETED'],
+    ['aura-grande', 'Engagement Ceremony (Mangni)', -2 * DAY, 'Aura Grande Complex, E-11', 400, 1.0, 'COMPLETED'],
+    ['rubaish-marquee', 'Wedding Mehndi', 1 * DAY, 'Rubaish Marquee, Bahria Town Phase 7', 450, 1.0, 'PLANNED'],
+    ['fortress-marquee', 'Wedding Baraat', 4 * DAY, 'Fortress Marquee, Islamabad Expressway', 700, 1.1, 'PLANNED'],
+    ['empire-marquee', 'Birthday Banquet', 6 * DAY, 'Empire Marquee, Islamabad Expressway', 200, 1.0, 'PLANNED'],
+    ['pak-china-centre', 'Food Festival Lunch', 7 * DAY, 'Pak-China Friendship Centre, Shakarparian', 600, 1.0, 'PLANNED'],
+    ['taj-marquee', 'Valima Reception', 9 * DAY, 'Taj Marquee, E-11', 550, 1.1, 'PLANNED'],
+  ];
+  const extra = {};
+  for (const [slug, name, offset, venue, guests, perGuest, status] of more) {
+    const servings = [0.9, 0.6, 0.7].map((f) => Math.round(guests * f));
+    extra[slug] = await plan(orgs[slug], { name, date: new Date(now + offset), venue, expectedGuests: guests, servingsPerGuest: perGuest, status }, servings);
+  }
+  return { past, today, upcoming, marquee, e11, ...extra };
 }
 
 /** One completed (or failed / expired) rescue in the past, with its full audit trail. */
@@ -323,7 +342,7 @@ async function seedPastRescues(client, { orgs, volunteers, events }, categoryByN
 }
 
 /** Live data: open listings (one near expiry) and open NGO requests, relative to now. */
-async function seedCurrent(client, { orgs }, categoryByName) {
+async function seedCurrent(client, { orgs, events }, categoryByName) {
   const now = Date.now();
   const listingSpecs = [
     ['savour-foods', 'Chicken pulao and shami kabab (lunch surplus)', 'Rice and biryani', 60, 1.0],
@@ -359,6 +378,24 @@ async function seedCurrent(client, { orgs }, categoryByName) {
     listings++;
   }
 
+  // Leftovers from two DHA events that finished today (event listings)
+  const eventListingSpecs = [
+    ['zarrar-banquet', 'Walima leftovers: chicken qorma and naan', 'Cooked meals', 40, 3],
+    ['capital-banquet', 'Corporate dinner leftovers: mutton qorma and rice', 'Cooked meals', 35, 2],
+  ];
+  for (const [slug, description, catName, qty, hoursAgo] of eventListingSpecs) {
+    const org = orgs[slug];
+    const cat = categoryByName[catName];
+    const preparedAt = new Date(now - hoursAgo * HOUR);
+    const safeUntil = new Date(preparedAt.getTime() + cat.defaultSafeHours * HOUR);
+    const l = await client.surplusListing.create({
+      data: { sourceType: 'EVENT', organisationId: org.id, eventId: events[slug].id, createdById: org.managerId, categoryId: cat.id, description, confirmedQuantity: qty, preparedAt, safeUntil, collectionDeadline: new Date(safeUntil.getTime() - 30 * MIN), address: org.address, area: org.area, latitude: org.latitude, longitude: org.longitude, handlingNotes: 'Packed in degs and foil trays', dietaryInfo: 'Halal', safetyConfirmed: true },
+    });
+    await client.statusHistory.create({ data: { entity: 'LISTING', entityId: l.id, toStatus: 'OPEN', reason: 'Event leftovers listed', actorUserId: org.managerId } });
+    listingBySlug['event:' + slug] = l;
+    listings++;
+  }
+
   const requestSpecs = [
     ['rizq', 'Rice and biryani', 80, 6, 'Evening distribution at F-8 community point'],
     ['robin-hood-army', 'Cooked meals', 60, 5, 'Weekly drive, F-6 and G-6 katchi abadis'],
@@ -383,38 +420,50 @@ async function seedCurrent(client, { orgs }, categoryByName) {
     requests++;
   }
 
-  // A ready-to-claim POOLED TRIP: Rizq's 80-serving rice request is filled by two
-  // donors (Savour Foods 50 + Kabul Restaurant 30), both offers already accepted, so a
-  // volunteer sees one trip with two pickups (GET /api/tasks/trips).
-  const pooled = [['savour-foods', 50], ['kabul-restaurant', 30]];
-  for (const [slug, qty] of pooled) {
-    const listing = listingBySlug[slug];
-    const request = requestBySlug.rizq;
-    const ngo = orgs.rizq;
-    const proposedAt = new Date(now - 20 * MIN);
-    const allocation = await client.allocation.create({
-      data: {
-        listingId: listing.id, requestId: request.id, quantity: qty, status: 'ACCEPTED', proposedAt,
-        responseDeadline: new Date(proposedAt.getTime() + 30 * MIN), pickupDeadline: new Date(Math.min(now + 100 * MIN, listing.collectionDeadline.getTime())),
-        score: 80, explanation: 'Pooled with another nearby donor to fill one larger request',
-      },
-    });
-    const nonce = newNonce();
-    const task = await client.rescueTask.create({
-      data: {
-        allocationId: allocation.id, collectorType: 'VOLUNTEER', status: 'OPEN', otpNonce: nonce,
-        pickupOtpHash: hashOtp(deriveOtp(nonce, 'PICKUP')), deliveryOtpHash: hashOtp(deriveOtp(nonce, 'DELIVERY')), otpExpiresAt: listing.safeUntil,
-      },
-    });
-    await client.statusHistory.createMany({
-      data: [
-        { entity: 'ALLOCATION', entityId: allocation.id, toStatus: 'PROPOSED', reason: allocation.explanation, time: proposedAt },
-        { entity: 'ALLOCATION', entityId: allocation.id, fromStatus: 'PROPOSED', toStatus: 'ACCEPTED', reason: 'Accepted', actorUserId: ngo.managerId, time: new Date(now - 10 * MIN) },
-        { entity: 'TASK', entityId: task.id, toStatus: 'OPEN', reason: 'Waiting for a volunteer', actorUserId: ngo.managerId, time: new Date(now - 10 * MIN) },
-      ],
-    });
+  // READY-TO-CLAIM POOLED TRIPS: each NGO request is filled by 2 or 3 donors, every offer
+  // already accepted, so a volunteer sees one trip per request (GET /api/tasks/trips).
+  // Categories match, and every listing keeps some food left. [request slug, [[listing, servings], ...]]
+  const pools = [
+    ['rizq', [['savour-foods', 50], ['kabul-restaurant', 30]]],
+    ['edhi-foundation', [['usmania', 30], ['bundu-khan', 30], ['des-pardes', 25]]],
+    ['sos-village', [['tehzeeb-bakers', 40], ['rahat-bakers', 20]]],
+    ['akhuwat', [['kfc-f7', 12], ['bravo-foods', 18]]],
+    ['dha-welfare-dastarkhwan', [['event:zarrar-banquet', 30], ['event:capital-banquet', 20]]],
+  ];
+  let pooledTripTasks = 0;
+  for (const [ngoSlug, parts] of pools) {
+    const request = requestBySlug[ngoSlug];
+    const ngo = orgs[ngoSlug];
+    for (const [listingKey, qty] of parts) {
+      const listing = listingBySlug[listingKey];
+      if (!listing || !request) throw new Error('Seed pool data is wrong: ' + ngoSlug + ' / ' + listingKey);
+      const proposedAt = new Date(now - 20 * MIN);
+      const others = parts.length - 1;
+      const allocation = await client.allocation.create({
+        data: {
+          listingId: listing.id, requestId: request.id, quantity: qty, status: 'ACCEPTED', proposedAt,
+          responseDeadline: new Date(proposedAt.getTime() + 30 * MIN), pickupDeadline: new Date(Math.min(now + 100 * MIN, listing.collectionDeadline.getTime())),
+          score: 75 + parts.length * 3, explanation: 'Pooled with ' + others + ' other nearby donor' + (others > 1 ? 's' : '') + ' to fill one larger request',
+        },
+      });
+      const nonce = newNonce();
+      const task = await client.rescueTask.create({
+        data: {
+          allocationId: allocation.id, collectorType: 'VOLUNTEER', status: 'OPEN', otpNonce: nonce,
+          pickupOtpHash: hashOtp(deriveOtp(nonce, 'PICKUP')), deliveryOtpHash: hashOtp(deriveOtp(nonce, 'DELIVERY')), otpExpiresAt: listing.safeUntil,
+        },
+      });
+      await client.statusHistory.createMany({
+        data: [
+          { entity: 'ALLOCATION', entityId: allocation.id, toStatus: 'PROPOSED', reason: allocation.explanation, time: proposedAt },
+          { entity: 'ALLOCATION', entityId: allocation.id, fromStatus: 'PROPOSED', toStatus: 'ACCEPTED', reason: 'Accepted', actorUserId: ngo.managerId, time: new Date(now - 10 * MIN) },
+          { entity: 'TASK', entityId: task.id, toStatus: 'OPEN', reason: 'Waiting for a volunteer', actorUserId: ngo.managerId, time: new Date(now - 10 * MIN) },
+        ],
+      });
+      pooledTripTasks++;
+    }
   }
-  return { listings, requests, pooledTripTasks: pooled.length };
+  return { listings, requests, pooledTrips: pools.length, pooledTripTasks };
 }
 
 // ---------------------------------------------------------------- entry point
@@ -445,7 +494,7 @@ export async function seed(client = prisma, { activity = false, log = () => {} }
   log('Seeding two weeks of past rescues (this takes a minute on a remote database)...');
   summary.pastRescues = await seedPastRescues(client, { ...base, events }, categoryByName);
   log('Seeding current open listings and requests...');
-  Object.assign(summary, await seedCurrent(client, base, categoryByName));
+  Object.assign(summary, await seedCurrent(client, { ...base, events }, categoryByName));
   return summary;
 }
 

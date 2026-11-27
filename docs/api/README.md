@@ -314,10 +314,10 @@ The seed fills the database with a realistic Islamabad dataset:
 - 14 food categories: cooked meals, rice and biryani, bread and bakery, dairy, fruit and vegetables, sweets and desserts, packaged food, fast food, barbecue and kababs, lentils and vegetable dishes, pizza and pasta, salads and raita, breakfast items, drinks and juices
 - menus: every restaurant has 4 to 5 items for its style; every marquee / caterer has a 9-item wedding menu (biryani, qorma, tikka and kababs, naan, sabzi, salad and raita, zarda and kheer, fruit, drinks)
 - 4 weeks of restaurant food records (about 4,200 rows)
-- 5 events: a past one, a just-finished one, an upcoming hotel conference, an upcoming marquee wedding and a Mehndi night at Monal Marquee (E-11)
-- a ready-to-claim **pooled trip**: Rizq's 80-serving rice request filled by Savour Foods (50) and Kabul Restaurant (30), both accepted
+- 14 events (5 finished, 1 confirmed, 8 upcoming) at hotels and marquees in E-11, on the Expressway, in Bahria Town, DHA and Shakarparian; two DHA events that finished today have their leftovers listed as event listings
+- 5 ready-to-claim **pooled trips** (`GET /api/tasks/trips`), every offer already accepted: Rizq (Savour Foods + Kabul Restaurant, 80 servings), Edhi (Usmania + Bundu Khan + Des Pardes, 85), SOS Children's Village (Tehzeeb + Rahat Bakers, 60), DHA Welfare Dastarkhwan (two DHA event leftovers, 50), Akhuwat (KFC + Bravo Foods, 30)
 - 2 weeks of past rescues (30 delivered, 3 failed, 2 expired)
-- 16 open listings (one near expiry; including Bahria Town and DHA) and 12 open NGO requests
+- 18 open listings (one near expiry; including Bahria Town, DHA and 2 event listings) and 12 open NGO requests
 
 > **Academic demo data.** Organisation names are real Islamabad restaurants, hotels and NGOs, used only to make this university project demo realistic. None of them is affiliated with FoodRescue, and every listing, request and rescue is simulated. Locations are approximate (sector or market level). A few organisations have generic invented names (marked in the seed file) placed in real areas. All people, licence numbers and phone numbers (including the NGO numbers in the directory) are fictional, not the real organisations' details. The full list is in `backend/prisma/seed-data/islamabad.js`.
 
