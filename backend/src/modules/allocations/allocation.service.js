@@ -26,10 +26,42 @@ function donorVerified(listing) {
   return orgCanAct(listing.organisation);
 }
 
-// An NGO that rejected an offer, or let it expire, is never offered the same food again
-// (stops the reject -> re-offer loop). Cancelled offers are not the NGO's choice, so they
-// do not count.
-export const DECLINED = ['REJECTED', 'EXPIRED'];
+// An NGO that declined an offer is never offered the same food again (stops the
+// reject -> re-offer loop). "Declined" means the NGO's own choice:
+//   - REJECTED by the NGO
+//   - EXPIRED while still PROPOSED (the NGO never answered)
+//   - CANCELLED by the NGO itself (an NGO cancelling an offer it accepted)
+// NOT declined: an offer that expired after the NGO accepted it (e.g. the volunteer
+// never picked it up), or one cancelled by an admin or by the donor withdrawing.
+export const DECLINED = ['REJECTED', 'EXPIRED', 'CANCELLED'];
+
+/** Set of "listingId:requestId" pairs the NGO declined (see the rule above). */
+export async function declinedPairs(tx, { listingIds, requestIds } = {}) {
+  const rows = await tx.allocation.findMany({
+    where: {
+      status: { in: DECLINED },
+      ...(listingIds ? { listingId: { in: listingIds } } : {}),
+      ...(requestIds ? { requestId: { in: requestIds } } : {}),
+    },
+    select: { id: true, listingId: true, requestId: true, status: true },
+  });
+  if (rows.length === 0) return new Set();
+  const needHistory = rows.filter((a) => a.status !== 'REJECTED').map((a) => a.id);
+  const history = needHistory.length
+    ? await tx.statusHistory.findMany({
+        where: { entity: 'ALLOCATION', entityId: { in: needHistory }, toStatus: { in: ['EXPIRED', 'CANCELLED'] } },
+        select: { entityId: true, fromStatus: true, toStatus: true, actor: { select: { role: true } } },
+      })
+    : [];
+  const byNgo = new Set(
+    history
+      .filter((h) => (h.toStatus === 'EXPIRED' && h.fromStatus === 'PROPOSED') || (h.toStatus === 'CANCELLED' && h.actor?.role === 'NGO'))
+      .map((h) => h.entityId),
+  );
+  const declined = new Set();
+  for (const a of rows) if (a.status === 'REJECTED' || byNgo.has(a.id)) declined.add(`${a.listingId}:${a.requestId}`);
+  return declined;
+}
 
 // ------------------------------------------------------------------ create
 
@@ -56,9 +88,8 @@ export async function createAllocationLocked(tx, { listingId, requestId, quantit
   if (request.ngo.verificationStatus !== 'VERIFIED') throw conflict('NGO is not verified');
   if (listing.categoryId !== request.categoryId) throw conflict('Food category does not match the request');
   if (!Number.isInteger(quantity) || quantity <= 0) throw badRequest('Quantity must be a positive whole number');
-  const declined = await tx.allocation.findFirst({ where: { listingId, requestId, status: { in: DECLINED } }, select: { status: true } });
-  if (declined) {
-    throw conflict(`This NGO already ${declined.status === 'REJECTED' ? 'rejected' : 'did not answer'} an offer of this food, so it will not be offered again`, { code: 'ALREADY_DECLINED' });
+  if ((await declinedPairs(tx, { listingIds: [listingId], requestIds: [requestId] })).size > 0) {
+    throw conflict('This NGO already declined an offer of this food (rejected, cancelled or did not answer), so it will not be offered again', { code: 'ALREADY_DECLINED' });
   }
 
   const lq = await listingQuantity(tx, listing);
@@ -178,6 +209,8 @@ export async function acceptAllocation(user, allocationId, { selfCollect = false
     const { listing, request } = allocation;
     // Re-check with fresh rows
     if (listing.status !== 'OPEN' || listing.collectionDeadline <= now || listing.safeUntil <= now) throw gone('The food is no longer available');
+    // The donor's licence may have expired (or been revoked) since the offer was made
+    if (!donorVerified(listing)) throw conflict('The donor is no longer verified or its food licence has expired, so this food cannot be accepted');
     if (request.status !== 'OPEN') throw conflict(`Your request is ${request.status.toLowerCase()}`);
 
     const pickupMinutes = await getNumber('PICKUP_WINDOW_MINUTES', tx);

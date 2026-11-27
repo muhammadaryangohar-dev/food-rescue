@@ -239,14 +239,17 @@ export async function maybeSweep() {
   return inFlight;
 }
 
-/** Express middleware: run the expire-on-read check before GET requests. Never fails the request. */
+/**
+ * Express middleware: start the expire-on-read check on GET requests. Never fails the request.
+ * The page does NOT wait for the sweep (on Neon a sweep under the lock can take seconds).
+ * Correctness does not depend on it: every write (accept, claim, pickup, ...) runs
+ * sweepLocked() first, so an expired offer can never be acted on. Tests wait for it so
+ * their results are predictable.
+ */
 export async function sweepOnRead(req, _res, next) {
   if (req.method === 'GET') {
-    try {
-      await maybeSweep();
-    } catch (err) {
-      console.error('[sweep] failed:', err.message);
-    }
+    const run = maybeSweep().catch((err) => console.error('[sweep] failed:', err.message));
+    if (process.env.NODE_ENV === 'test') await run;
   }
   next();
 }

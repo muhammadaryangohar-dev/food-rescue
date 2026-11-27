@@ -8,6 +8,7 @@ import { prisma } from './lib/prisma.js';
 import { apiLimiter } from './middleware/rateLimit.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { sweepOnRead } from './modules/allocations/sweep.service.js';
+import './modules/matching/matching.service.js'; // Member 2: registers the matching engine
 
 import accessRoutes from './modules/access/access.routes.js';
 import categoryRoutes from './modules/listings/category.routes.js';
@@ -21,6 +22,10 @@ import adminRoutes from './modules/notifications-admin/admin.routes.js';
 import locationRoutes from './modules/location/location.routes.js';
 import ngoDirectoryRoutes from './modules/location/ngo-directory.routes.js';
 import reliabilityRoutes from './modules/tracking/reliability.routes.js';
+import foodPreventionRoutes from './modules/food-prevention/food.routes.js'; // Member 2
+import eventRoutes from './modules/events/event.routes.js'; // Member 2
+import impactRoutes from './modules/impact/impact.routes.js'; // Member 2
+import fairnessRoutes from './modules/fairness/fairness.routes.js'; // Member 2
 
 export function createApp() {
   const app = express();
@@ -56,11 +61,11 @@ export function createApp() {
   app.use('/api/notifications', notificationRoutes);
   app.use('/api/admin', adminRoutes);
 
-  // ---- Member 2 / Member 3 modules plug in here, e.g.:
-  // app.use('/api/food', foodPreventionRoutes);   // M2
-  // app.use('/api/events', eventRoutes);          // M3
-  // app.use('/api/impact', impactRoutes);         // M9
-  // app.use('/api/fairness', fairnessRoutes);     // M10
+  // ---- Member 2 modules
+  app.use('/api/food', foodPreventionRoutes); // M2 forecast and prevention
+  app.use('/api/events', eventRoutes); // M3 events
+  app.use('/api/impact', impactRoutes); // M9 impact
+  app.use('/api/fairness', fairnessRoutes); // M10 fairness
 
   app.use(notFoundHandler);
   app.use(errorHandler);
